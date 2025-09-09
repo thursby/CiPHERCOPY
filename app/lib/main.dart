@@ -53,8 +53,9 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
   bool _cancelRequested = false;
   core.CancellationToken? _cancellationToken;
   StreamController<String>? _logController;
+
   // Throttled UI update support
-  final Duration _uiUpdateInterval = const Duration(milliseconds: 120);
+  final Duration _uiUpdateInterval = const Duration(milliseconds: 30);
   DateTime _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
   Timer? _throttleTimer;
   bool _dirty = false; // indicates progress state changed since last paint
@@ -420,19 +421,19 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
         Directory.current = previousCwd;
       }
 
-      void _flushUi() {
+      void flushUi() {
         if (!_dirty || !mounted) return;
         _dirty = false;
         _lastUiUpdate = DateTime.now();
         setState(() {}); // Rebuild with latest progress state
       }
 
-      void _scheduleDeferredFlush() {
+      void scheduleDeferredFlush() {
         if (_throttleTimer?.isActive == true) return;
         final remaining =
             _uiUpdateInterval - DateTime.now().difference(_lastUiUpdate);
         final delay = remaining.isNegative ? Duration.zero : remaining;
-        _throttleTimer = Timer(delay, _flushUi);
+        _throttleTimer = Timer(delay, flushUi);
       }
 
       void onProgress(core.ProgressEvent e) {
@@ -476,9 +477,9 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
             (e.type == core.ProgressEventType.fileDone &&
                 (_overallCompleted == _overallTotal));
         if (shouldFlushNow) {
-          _flushUi();
+          flushUi();
         } else {
-          _scheduleDeferredFlush();
+          scheduleDeferredFlush();
         }
       }
 
