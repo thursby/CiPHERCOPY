@@ -53,9 +53,15 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
   bool _cancelRequested = false;
   core.CancellationToken? _cancellationToken;
   StreamController<String>? _logController;
+  // Throttled UI update support
+  final Duration _uiUpdateInterval = const Duration(milliseconds: 120);
+  DateTime _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _throttleTimer;
+  bool _dirty = false; // indicates progress state changed since last paint
 
   @override
   void dispose() {
+  _throttleTimer?.cancel();
     _logController?.close();
     super.dispose();
   }
@@ -389,6 +395,9 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
       _statusMessage = null;
       _cancelRequested = false;
       _cancellationToken = core.CancellationToken();
+  _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+  _throttleTimer?.cancel();
+  _dirty = false;
     });
     try {
       // Determine a base directory (used for resolving relative paths and logging)
@@ -414,37 +423,60 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
       void onProgress(core.ProgressEvent e) {
         if (!mounted) return;
         if (_cancelRequested) return; // Stop updating UI after cancel request
-        setState(() {
-          switch (e.type) {
-            case core.ProgressEventType.fileProgress:
-              final path = e.path ?? '';
-              if (path.isNotEmpty) {
-                _activeFiles[path] = _ActiveFileProgress(
-                  path: path,
-                  copied: e.copied ?? 0,
-                  total: (e.total ?? 0),
-                );
-              }
-              break;
-            case core.ProgressEventType.fileDone:
-              if (e.path != null) {
-                _activeFiles.remove(e.path);
-              }
-              _overallCompleted = e.completedFiles ?? _overallCompleted;
-              _overallTotal = e.totalFiles ?? _overallTotal;
-              _progress = _overallTotal == 0
-                  ? 0
-                  : (_overallCompleted / _overallTotal).clamp(0, 1);
-              break;
-            case core.ProgressEventType.overall:
-              _overallCompleted = e.completedFiles ?? _overallCompleted;
-              _overallTotal = e.totalFiles ?? _overallTotal;
-              _progress = _overallTotal == 0
-                  ? 0
-                  : (_overallCompleted / _overallTotal).clamp(0, 1);
-              break;
-          }
-        });
+        // Update internal state without immediate rebuild.
+        switch (e.type) {
+          case core.ProgressEventType.fileProgress:
+            final path = e.path ?? '';
+            if (path.isNotEmpty) {
+              _activeFiles[path] = _ActiveFileProgress(
+                path: path,
+                copied: e.copied ?? 0,
+                total: (e.total ?? 0),
+              );
+            }
+            break;
+          case core.ProgressEventType.fileDone:
+            if (e.path != null) {
+              _activeFiles.remove(e.path);
+            }
+            _overallCompleted = e.completedFiles ?? _overallCompleted;
+            _overallTotal = e.totalFiles ?? _overallTotal;
+            _progress = _overallTotal == 0
+                ? 0
+                : (_overallCompleted / _overallTotal).clamp(0, 1);
+            break;
+          case core.ProgressEventType.overall:
+            _overallCompleted = e.completedFiles ?? _overallCompleted;
+            _overallTotal = e.totalFiles ?? _overallTotal;
+            _progress = _overallTotal == 0
+                ? 0
+                : (_overallCompleted / _overallTotal).clamp(0, 1);
+            break;
+        }
+        _dirty = true;
+        final now = DateTime.now();
+        final since = now.difference(_lastUiUpdate);
+        final shouldFlushNow = since >= _uiUpdateInterval ||
+            (e.type == core.ProgressEventType.fileDone && (_overallCompleted == _overallTotal));
+        if (shouldFlushNow) {
+          _flushUi();
+        } else {
+          _scheduleDeferredFlush();
+        }
+      }
+
+      void _scheduleDeferredFlush() {
+        if (_throttleTimer?.isActive == true) return;
+        final remaining = _uiUpdateInterval - DateTime.now().difference(_lastUiUpdate);
+        final delay = remaining.isNegative ? Duration.zero : remaining;
+        _throttleTimer = Timer(delay, _flushUi);
+      }
+
+      void _flushUi() {
+        if (!_dirty || !mounted) return;
+        _dirty = false;
+        _lastUiUpdate = DateTime.now();
+        setState(() {}); // Rebuild with latest progress state
       }
 
       if (_operation == OperationType.verify) {
