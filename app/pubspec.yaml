@@ -1,7 +1,8 @@
 name: ciphercopy
-description: "A new Flutter project."
+description: Flutter GUI for CiPHERCOPY: wizard-driven multi-threaded file copy & SHA-1 verification with live progress, logs, and cancellation.
 publish_to: 'none'
 version: 0.1.0
+repository: https://github.com/thursby/ciphercopy
 
 environment:
   sdk: ^3.9.0
