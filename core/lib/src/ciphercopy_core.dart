@@ -55,166 +55,140 @@ Future<void> copyFilesFromList(
   CancellationToken? cancelToken,
 }) async {
   final lines = await File(listFile).readAsLines();
-  final hashFile = destDir.endsWith('/')
-      ? '${destDir}hashes.sha1'
-      : '$destDir/hashes.sha1';
+  final hashFile = destDir.endsWith('/') ? '${destDir}hashes.sha1' : '$destDir/hashes.sha1';
   await deleteFile(hashFile);
   logger.info('Copying files from list: $listFile to $destDir');
-  final files = <Map<String, String>>[];
+  final queue = <Map<String, String>>[];
   for (final line in lines) {
     final trimmed = line.trim();
     if (trimmed.isEmpty) continue;
     if (await FileSystemEntity.isDirectory(trimmed)) continue;
     final relPath = trimmed.startsWith('/') ? trimmed.substring(1) : trimmed;
-    final destPath = destDir.endsWith('/')
-        ? '$destDir$relPath'
-        : '$destDir/$relPath';
-    await Directory(
-      destPath.substring(0, destPath.lastIndexOf('/')),
-    ).create(recursive: true);
-    files.add({'source': trimmed, 'dest': destPath});
+    final destPath = destDir.endsWith('/') ? '$destDir$relPath' : '$destDir/$relPath';
+    await Directory(destPath.substring(0, destPath.lastIndexOf('/'))).create(recursive: true);
+    queue.add({'source': trimmed, 'dest': destPath});
   }
   final cpuCount = threadCount ?? Platform.numberOfProcessors;
-  final fileQueue = List<Map<String, String>>.from(files);
-  final totalFiles = fileQueue.length;
-  logger.info('Total files to copy: $totalFiles using $cpuCount threads.');
-  final hashLines = <String>[];
+  final totalFiles = queue.length;
+  logger.info('Total files to copy: $totalFiles using $cpuCount workers (pool).');
+  onProgress?.call(ProgressEvent(type: ProgressEventType.overall, completedFiles: 0, totalFiles: totalFiles));
+  if (totalFiles == 0) {
+    logger.warning('No files to copy.');
+    return;
+  }
   final receivePort = ReceivePort();
   final copied = <String>[];
   final errored = <String>[];
-  int completedFiles = 0;
-  int active = 0;
-  bool done = false;
-  // Notify initial overall state
-  onProgress?.call(
-    ProgressEvent(
-      type: ProgressEventType.overall,
-      completedFiles: 0,
-      totalFiles: totalFiles,
-    ),
-  );
-
+  final hashLines = <String>[];
+  var completed = 0;
+  var active = 0;
+  final idleWorkers = <SendPort>[];
   final isolates = <Isolate>[];
+  bool shuttingDown = false;
 
-  void startNext() {
-    if (cancelToken?.isCancelled == true) return;
-    if (fileQueue.isEmpty) {
-      if (active == 0 && !done) {
-        done = true;
-        receivePort.close();
-      }
-      return;
+  void tryDispatch() {
+    if (shuttingDown) return;
+    while (idleWorkers.isNotEmpty && queue.isNotEmpty && (cancelToken?.isCancelled != true)) {
+      final worker = idleWorkers.removeLast();
+      final job = queue.removeAt(0);
+      active++;
+      worker.send({'type': 'task', 'file': job});
     }
-    final file = fileQueue.removeAt(0);
-    active++;
-    Isolate.spawn(_copyFileEntrySingleWriter, [file, receivePort.sendPort])
-        .then((iso) {
-      isolates.add(iso);
-      if (cancelToken?.isCancelled == true) {
-        iso.kill(priority: Isolate.immediate);
+    if ((queue.isEmpty && active == 0) || cancelToken?.isCancelled == true) {
+      shuttingDown = true;
+      for (final w in idleWorkers) {
+        w.send({'type': 'shutdown'});
       }
-    });
+      for (final iso in isolates) {
+        if (cancelToken?.isCancelled == true) {
+          iso.kill(priority: Isolate.immediate);
+        }
+      }
+      receivePort.close();
+    }
   }
 
-  for (int i = 0; i < cpuCount && fileQueue.isNotEmpty; i++) {
-    startNext();
+  for (int i = 0; i < cpuCount; i++) {
+    final iso = await Isolate.spawn(_copyWorkerMain, receivePort.sendPort);
+    isolates.add(iso);
   }
+
   await for (final msg in receivePort) {
-    if (cancelToken?.isCancelled == true) {
-      // Kill any remaining isolates and stop spawning.
-      for (final iso in isolates) {
-        iso.kill(priority: Isolate.immediate);
-      }
-      logger.warning('Copy operation cancelled.');
-      done = true;
-      receivePort.close();
+    if (cancelToken?.isCancelled == true && !shuttingDown) {
+      logger.warning('Copy operation cancelled (pool).');
+      shuttingDown = true;
+      tryDispatch();
       break;
     }
-    if (msg is Map && msg['type'] == 'done') {
-      final dest = (msg['dest'] ?? '') as String;
-      completedFiles++;
-      onProgress?.call(
-        ProgressEvent(
-          type: ProgressEventType.fileDone,
-          path: dest,
-          completedFiles: completedFiles,
-          totalFiles: totalFiles,
-        ),
-      );
-      onProgress?.call(
-        ProgressEvent(
-          type: ProgressEventType.overall,
-          completedFiles: completedFiles,
-          totalFiles: totalFiles,
-        ),
-      );
-      active--;
-      if (cancelToken?.isCancelled != true) startNext();
-      if (fileQueue.isEmpty && active == 0 && !done) {
-        done = true;
-        receivePort.close();
+    if (msg is Map) {
+      switch (msg['type']) {
+        case 'workerReady':
+          idleWorkers.add(msg['sendPort'] as SendPort);
+          tryDispatch();
+          break;
+        case 'progress':
+          onProgress?.call(ProgressEvent(
+            type: ProgressEventType.fileProgress,
+            path: msg['dest'] as String?,
+            copied: msg['copied'] as int?,
+            total: msg['total'] as int?,
+            completedFiles: completed,
+            totalFiles: totalFiles,
+          ));
+          break;
+        case 'hash':
+          final line = msg['line'] as String;
+          hashLines.add(line);
+          final parts = line.split('  ');
+          if (parts.length == 2) {
+            final copiedPath = parts[1].trim();
+            logger.info('Copied file: $copiedPath');
+            copied.add(copiedPath);
+          }
+          break;
+        case 'fileDone':
+          completed++;
+            active--;
+            onProgress?.call(ProgressEvent(
+              type: ProgressEventType.fileDone,
+              path: msg['dest'] as String?,
+              completedFiles: completed,
+              totalFiles: totalFiles,
+            ));
+            onProgress?.call(ProgressEvent(
+              type: ProgressEventType.overall,
+              completedFiles: completed,
+              totalFiles: totalFiles,
+            ));
+            idleWorkers.add(msg['worker'] as SendPort);
+            tryDispatch();
+          break;
+        case 'error':
+          final src = msg['source'] as String? ?? 'unknown';
+          logger.severe('Error copying file $src: ${msg['error']}');
+          errored.add(src);
+          active--;
+          idleWorkers.add(msg['worker'] as SendPort);
+          tryDispatch();
+          break;
       }
-    } else if (msg == 'done') {
-      completedFiles++;
-      onProgress?.call(
-        ProgressEvent(
-          type: ProgressEventType.overall,
-          completedFiles: completedFiles,
-          totalFiles: totalFiles,
-        ),
-      );
-      active--;
-      if (cancelToken?.isCancelled != true) startNext();
-      if (fileQueue.isEmpty && active == 0 && !done) {
-        done = true;
-        receivePort.close();
-      }
-    } else if (msg is String) {
-      hashLines.add(msg);
-      final parts = msg.split('  ');
-      if (parts.length == 2) {
-        final copiedPath = parts[1].trim();
-        logger.info('Copied file: $copiedPath');
-        copied.add(copiedPath);
-      }
-    } else if (msg is Map && msg['type'] == 'progress') {
-      final dest = (msg['dest'] ?? '') as String;
-      final copiedNow = (msg['copied'] ?? 0) as int;
-      final total = (msg['total'] ?? 0) as int;
-      onProgress?.call(
-        ProgressEvent(
-          type: ProgressEventType.fileProgress,
-          path: dest,
-          copied: copiedNow,
-          total: total,
-          completedFiles: completedFiles,
-          totalFiles: totalFiles,
-        ),
-      );
-    } else if (msg is _CopyFileError) {
-      logger.severe('Error copying file ${msg.file['source']}: ${msg.error}');
-      errored.add(msg.file['source'] ?? '');
     }
   }
+
   if (cancelToken?.isCancelled == true) {
-    // Write partial results if any, then return early.
     if (hashLines.isNotEmpty) {
       final sha1File = File(hashFile);
       await sha1File.writeAsString(hashLines.join(''), mode: FileMode.append);
       logger.info('Partial hashes written to $hashFile');
     }
     if (saveLists) {
-      final copiedFile = File(
-        destDir.endsWith('/') ? '${destDir}copied.txt' : '$destDir/copied.txt',
-      );
-      final erroredFile = File(
-        destDir.endsWith('/') ? '${destDir}errored.txt' : '$destDir/errored.txt',
-      );
+      final copiedFile = File(destDir.endsWith('/') ? '${destDir}copied.txt' : '$destDir/copied.txt');
+      final erroredFile = File(destDir.endsWith('/') ? '${destDir}errored.txt' : '$destDir/errored.txt');
       await copiedFile.writeAsString(copied.join('\n'));
       await erroredFile.writeAsString(errored.join('\n'));
       logger.info('Partial copied/errored lists written (cancelled).');
     }
-    return; // Cancelled: skip normal completion log
+    return;
   }
   if (hashLines.isNotEmpty) {
     final sha1File = File(hashFile);
@@ -222,12 +196,8 @@ Future<void> copyFilesFromList(
     logger.info('Hashes written to $hashFile');
   }
   if (saveLists) {
-    final copiedFile = File(
-      destDir.endsWith('/') ? '${destDir}copied.txt' : '$destDir/copied.txt',
-    );
-    final erroredFile = File(
-      destDir.endsWith('/') ? '${destDir}errored.txt' : '$destDir/errored.txt',
-    );
+    final copiedFile = File(destDir.endsWith('/') ? '${destDir}copied.txt' : '$destDir/copied.txt');
+    final erroredFile = File(destDir.endsWith('/') ? '${destDir}errored.txt' : '$destDir/errored.txt');
     if (copied.isNotEmpty) {
       await copiedFile.writeAsString('${copied.join('\n')}\n');
       logger.info('Copied file list written to ${copiedFile.path}');
@@ -243,55 +213,59 @@ Future<void> copyFilesFromList(
   }
 }
 
-void _copyFileEntrySingleWriter(List args) async {
-  final Map<String, String> file = args[0];
-  final SendPort sendPort = args[1];
-  try {
-    final source = File(file['source']!);
-    final dest = File(file['dest']!);
-    final total = await source.length();
-    var copiedBytes = 0;
-    final out = dest.openWrite();
-    final throttle = Stopwatch()..start();
-    const updateMs = 100;
-    final capture = _DigestCaptureSink();
-    final hasher = sha1.startChunkedConversion(capture);
-    await for (final chunk in source.openRead()) {
-      out.add(chunk);
-      hasher.add(chunk);
-      copiedBytes += chunk.length;
-      if (throttle.elapsedMilliseconds >= updateMs) {
-        sendPort.send({
-          'type': 'progress',
-          'dest': file['dest'],
-          'copied': copiedBytes,
-          'total': total,
+void _copyWorkerMain(SendPort manager) async {
+  final commandPort = ReceivePort();
+  manager.send({'type': 'workerReady', 'sendPort': commandPort.sendPort});
+  await for (final msg in commandPort) {
+    if (msg is Map && msg['type'] == 'task') {
+      final file = (msg['file'] as Map).cast<String, String>();
+      try {
+        final source = File(file['source']!);
+        final dest = File(file['dest']!);
+        final total = await source.length();
+        var copiedBytes = 0;
+        final out = dest.openWrite();
+        final throttle = Stopwatch()..start();
+        const updateMs = 100;
+        final capture = _DigestCaptureSink();
+        final hasher = sha1.startChunkedConversion(capture);
+        await for (final chunk in source.openRead()) {
+          out.add(chunk);
+          hasher.add(chunk);
+          copiedBytes += chunk.length;
+          if (throttle.elapsedMilliseconds >= updateMs) {
+            manager.send({
+              'type': 'progress',
+              'dest': file['dest'],
+              'copied': copiedBytes,
+              'total': total,
+            });
+            throttle.reset();
+          }
+        }
+        await out.close();
+        hasher.close();
+        final digest = capture.digest!;
+        manager.send({'type': 'hash', 'line': '${digest.toString()}  ${file['dest']!}\n'});
+        manager.send({'type': 'fileDone', 'dest': file['dest'], 'worker': commandPort.sendPort});
+      } catch (e, st) {
+        manager.send({
+          'type': 'error',
+          'source': file['source'],
+          'error': e.toString(),
+          'stack': st.toString(),
+          'worker': commandPort.sendPort,
         });
-        throttle.reset();
+        manager.send({'type': 'fileDone', 'dest': file['dest'], 'worker': commandPort.sendPort});
       }
+    } else if (msg is Map && msg['type'] == 'shutdown') {
+      commandPort.close();
+      break;
     }
-    await out.close();
-    hasher.close();
-    final digest = capture.digest!;
-    final hashLine = '${digest.toString()}  ${file['dest']!}\n';
-    sendPort.send(hashLine);
-  } catch (e, st) {
-    sendPort.send(_CopyFileError(error: e, stackTrace: st, file: file));
-  } finally {
-    sendPort.send({'type': 'done', 'dest': file['dest']});
   }
 }
 
-class _CopyFileError {
-  final Object error;
-  final StackTrace stackTrace;
-  final Map<String, String> file;
-  _CopyFileError({
-    required this.error,
-    required this.stackTrace,
-    required this.file,
-  });
-}
+// _CopyFileError removed in worker pool refactor (errors sent as maps).
 
 class _DigestCaptureSink implements Sink<Digest> {
   Digest? digest;
@@ -395,115 +369,107 @@ Future<VerifySummary> verifyFromSha1(
   logger.info('Total files to verify: $totalFiles using $cpuCount threads.');
   final receivePort = ReceivePort();
   final queue = List<Map<String, String>>.from(entries);
+  onProgress?.call(ProgressEvent(type: ProgressEventType.overall, completedFiles: 0, totalFiles: totalFiles));
+  if (queue.isEmpty) {
+    return VerifySummary(total: 0, ok: 0, mismatched: 0, errors: 0, mismatchedFiles: const [], errorFiles: const []);
+  }
   int completedFiles = 0;
-  onProgress?.call(
-    ProgressEvent(
-      type: ProgressEventType.overall,
-      completedFiles: 0,
-      totalFiles: totalFiles,
-    ),
-  );
-  int active = 0;
   int okCount = 0;
   int mismatchCount = 0;
   int errorCount = 0;
+  int active = 0;
+  bool shuttingDown = false;
   final mismatches = <String>[];
   final errors = <String>[];
-  // Throttling previously used for rendering; no longer needed in core.
+  final idleWorkers = <SendPort>[];
   final isolates = <Isolate>[];
-  void startNext() {
-    if (cancelToken?.isCancelled == true) return;
-    if (queue.isEmpty) return;
-    final job = queue.removeAt(0);
-    active++;
-    Isolate.spawn(_verifyFileEntry, [job, receivePort.sendPort]).then((iso) {
-      isolates.add(iso);
-      if (cancelToken?.isCancelled == true) {
-        iso.kill(priority: Isolate.immediate);
+
+  void tryDispatch() {
+    if (shuttingDown) return;
+    while (idleWorkers.isNotEmpty && queue.isNotEmpty && (cancelToken?.isCancelled != true)) {
+      final worker = idleWorkers.removeLast();
+      final job = queue.removeAt(0);
+      active++;
+      worker.send({'type': 'task', 'job': job});
+    }
+    if ((queue.isEmpty && active == 0) || cancelToken?.isCancelled == true) {
+      shuttingDown = true;
+      for (final w in idleWorkers) {
+        w.send({'type': 'shutdown'});
       }
-    });
+      for (final iso in isolates) {
+        if (cancelToken?.isCancelled == true) {
+          iso.kill(priority: Isolate.immediate);
+        }
+      }
+      receivePort.close();
+    }
   }
 
-  for (int i = 0; i < cpuCount && queue.isNotEmpty; i++) {
-    startNext();
+  for (int i = 0; i < cpuCount; i++) {
+    final iso = await Isolate.spawn(_verifyWorkerMain, receivePort.sendPort);
+    isolates.add(iso);
   }
+
   await for (final msg in receivePort) {
-    if (cancelToken?.isCancelled == true) {
-      for (final iso in isolates) {
-        iso.kill(priority: Isolate.immediate);
-      }
-      logger.warning('Verify operation cancelled.');
-      receivePort.close();
+    if (cancelToken?.isCancelled == true && !shuttingDown) {
+      logger.warning('Verify operation cancelled (pool).');
+      shuttingDown = true;
+      tryDispatch();
       break;
     }
-    if (msg is Map && msg['type'] == 'progress') {
-      final path = (msg['path'] ?? '') as String;
-      final copiedNow = (msg['copied'] ?? 0) as int;
-      final total = (msg['total'] ?? 0) as int;
-      onProgress?.call(
-        ProgressEvent(
-          type: ProgressEventType.fileProgress,
-          path: path,
-          copied: copiedNow,
-          total: total,
-          completedFiles: completedFiles,
-          totalFiles: totalFiles,
-        ),
-      );
-    } else if (msg is Map && msg['type'] == 'verified') {
-      final ok = (msg['ok'] ?? false) as bool;
-      final path = (msg['path'] ?? '') as String;
-      if (ok) {
-        okCount++;
-      } else {
-        mismatchCount++;
-        mismatches.add(path);
-        logger.warning(
-          'Hash mismatch: ${msg['expected']} != ${msg['actual']} for $path',
-        );
-      }
-    } else if (msg is Map && msg['type'] == 'error') {
-      errorCount++;
-      final path = (msg['path'] ?? '') as String;
-      final err = (msg['error'] ?? 'unknown error').toString();
-      errors.add(path);
-      logger.severe('Error verifying $path: $err');
-    } else if (msg is Map && msg['type'] == 'done') {
-      final path = (msg['path'] ?? msg['dest'] ?? '') as String;
-      completedFiles++;
-      onProgress?.call(
-        ProgressEvent(
-          type: ProgressEventType.fileDone,
-          path: path,
-          completedFiles: completedFiles,
-          totalFiles: totalFiles,
-        ),
-      );
-      onProgress?.call(
-        ProgressEvent(
-          type: ProgressEventType.overall,
-          completedFiles: completedFiles,
-          totalFiles: totalFiles,
-        ),
-      );
-      active--;
-      if (cancelToken?.isCancelled != true) startNext();
-      if (queue.isEmpty && active == 0) {
-        receivePort.close();
+    if (msg is Map) {
+      switch (msg['type']) {
+        case 'workerReady':
+          idleWorkers.add(msg['sendPort'] as SendPort);
+          tryDispatch();
+          break;
+        case 'progress':
+          onProgress?.call(ProgressEvent(
+            type: ProgressEventType.fileProgress,
+            path: msg['path'] as String?,
+            copied: msg['copied'] as int?,
+            total: msg['total'] as int?,
+            completedFiles: completedFiles,
+            totalFiles: totalFiles,
+          ));
+          break;
+        case 'verified':
+          final ok = msg['ok'] as bool? ?? false;
+          final path = msg['path'] as String? ?? '';
+          if (ok) {
+            okCount++;
+          } else {
+            mismatchCount++;
+            mismatches.add(path);
+            logger.warning('Hash mismatch: ${msg['expected']} != ${msg['actual']} for $path');
+          }
+          break;
+        case 'error':
+          final path = msg['path'] as String? ?? '';
+          errors.add(path);
+          errorCount++;
+          logger.severe('Error verifying $path: ${msg['error']}');
+          break;
+        case 'fileDone':
+          completedFiles++;
+          active--;
+          onProgress?.call(ProgressEvent(
+            type: ProgressEventType.fileDone,
+            path: msg['path'] as String?,
+            completedFiles: completedFiles,
+            totalFiles: totalFiles,
+          ));
+          onProgress?.call(ProgressEvent(
+            type: ProgressEventType.overall,
+            completedFiles: completedFiles,
+            totalFiles: totalFiles,
+          ));
+          idleWorkers.add(msg['worker'] as SendPort);
+          tryDispatch();
+          break;
       }
     }
-  }
-  if (cancelToken?.isCancelled == true) {
-    // Return partial summary
-    final summary = VerifySummary(
-      total: totalFiles,
-      ok: okCount,
-      mismatched: mismatchCount,
-      errors: errorCount,
-      mismatchedFiles: mismatches,
-      errorFiles: errors,
-    );
-    return summary;
   }
   final summary = VerifySummary(
     total: totalFiles,
@@ -513,50 +479,48 @@ Future<VerifySummary> verifyFromSha1(
     mismatchedFiles: mismatches,
     errorFiles: errors,
   );
-  logger.info(
-    'Verify complete: ${summary.ok}/${summary.total} OK, ${summary.mismatched} mismatched, ${summary.errors} errors.',
-  );
+  if (cancelToken?.isCancelled == true) {
+    return summary;
+  }
+  logger.info('Verify complete: ${summary.ok}/${summary.total} OK, ${summary.mismatched} mismatched, ${summary.errors} errors.');
   return summary;
 }
 
-void _verifyFileEntry(List args) async {
-  final Map<String, String> job = args[0];
-  final SendPort sendPort = args[1];
-  final path = job['path']!;
-  final expected = job['hash']!;
-  try {
-    final f = File(path);
-    final total = await f.length();
-    var read = 0;
-    final capture = _DigestCaptureSink();
-    final hasher = sha1.startChunkedConversion(capture);
-    final throttle = Stopwatch()..start();
-    const updateMs = 100;
-    await for (final chunk in f.openRead()) {
-      hasher.add(chunk);
-      read += chunk.length;
-      if (throttle.elapsedMilliseconds >= updateMs) {
-        sendPort.send({
-          'type': 'progress',
-          'path': path,
-          'copied': read,
-          'total': total,
-        });
-        throttle.reset();
+void _verifyWorkerMain(SendPort manager) async {
+  final commandPort = ReceivePort();
+  manager.send({'type': 'workerReady', 'sendPort': commandPort.sendPort});
+  await for (final msg in commandPort) {
+    if (msg is Map && msg['type'] == 'task') {
+      final job = (msg['job'] as Map).cast<String, String>();
+      final path = job['path']!;
+      final expected = job['hash']!;
+      try {
+        final f = File(path);
+        final total = await f.length();
+        var read = 0;
+        final capture = _DigestCaptureSink();
+        final hasher = sha1.startChunkedConversion(capture);
+        final throttle = Stopwatch()..start();
+        const updateMs = 100;
+        await for (final chunk in f.openRead()) {
+          hasher.add(chunk);
+          read += chunk.length;
+          if (throttle.elapsedMilliseconds >= updateMs) {
+            manager.send({'type': 'progress', 'path': path, 'copied': read, 'total': total});
+            throttle.reset();
+          }
+        }
+        hasher.close();
+        final actual = capture.digest!.toString();
+        manager.send({'type': 'verified', 'path': path, 'ok': actual == expected, 'expected': expected, 'actual': actual});
+        manager.send({'type': 'fileDone', 'path': path, 'worker': commandPort.sendPort});
+      } catch (e) {
+        manager.send({'type': 'error', 'path': path, 'error': e.toString(), 'worker': commandPort.sendPort});
+        manager.send({'type': 'fileDone', 'path': path, 'worker': commandPort.sendPort});
       }
+    } else if (msg is Map && msg['type'] == 'shutdown') {
+      commandPort.close();
+      break;
     }
-    hasher.close();
-    final actual = capture.digest!.toString();
-    sendPort.send({
-      'type': 'verified',
-      'path': path,
-      'ok': actual == expected,
-      'expected': expected,
-      'actual': actual,
-    });
-  } catch (e) {
-    sendPort.send({'type': 'error', 'path': path, 'error': e.toString()});
-  } finally {
-    sendPort.send({'type': 'done', 'path': path});
   }
 }
