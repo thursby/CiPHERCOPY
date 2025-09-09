@@ -379,8 +379,7 @@ Future<VerifySummary> verifyFromSha1(
   for (final line in lines) {
     final trimmed = line.trim();
     if (trimmed.isEmpty) continue;
-    final idx = trimmed.indexOf('  ');
-    // final idx = RegExp(r' {2,}| ').firstMatch(trimmed)?.start ?? -1;
+    final idx = RegExp(r' {2,}| ').firstMatch(trimmed)?.start ?? -1;
     if (idx <= 0) continue;
     final hash = trimmed.substring(0, idx).trim();
     final path = trimmed.substring(idx + 2).trim();
