@@ -5,8 +5,21 @@ import 'dart:async';
 import 'dart:io';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
+import 'package:window_manager/window_manager.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+    await windowManager.ensureInitialized();
+    const initialSize = Size(500, 800);
+    await windowManager.waitUntilReadyToShow().then((_) async {
+      await windowManager.setTitle('CiPHERCOPY');
+      await windowManager.setMinimumSize(const Size(500, 600));
+      await windowManager.setSize(initialSize);
+      await windowManager.show();
+      await windowManager.setPreventClose(false);
+    });
+  }
   runApp(const CipherCopyApp());
 }
 
@@ -94,19 +107,36 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
         steps: [
           Step(
             title: const Text('Select an Operation'),
-            content: Column(
+            content: Row(
               children: [
-                RadioListTile<OperationType>(
-                  title: const Text('Verify existing hashes'),
-                  value: OperationType.verify,
-                  groupValue: _operation,
-                  onChanged: (val) => setState(() => _operation = val),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _operation = OperationType.verify;
+                    });
+                    _nextStep();
+                  },
+                  child: Column(
+                    children: [
+                      Icon(Icons.verified, size: 48),
+                      const Text('Verify existing hashes'),
+                    ],
+                  ),
                 ),
-                RadioListTile<OperationType>(
-                  title: const Text('Copy using a file list'),
-                  value: OperationType.copy,
-                  groupValue: _operation,
-                  onChanged: (val) => setState(() => _operation = val),
+                const SizedBox(width: 16),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _operation = OperationType.copy;
+                    });
+                    _nextStep();
+                  },
+                  child: Column(
+                    children: [
+                      Icon(Icons.copy, size: 48),
+                      const Text('Copy using a file list'),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -128,16 +158,17 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
         controlsBuilder: (context, details) {
           return Row(
             children: <Widget>[
-              if (_step < 2)
-                ElevatedButton(
+              if (_step == 1)
+                ElevatedButton.icon(
                   onPressed: details.onStepContinue,
-                  child: const Text('Next'),
+                  icon: const Icon(Icons.arrow_forward),
+                  label: const Text('Next'),
                 ),
-              // Disable Back button on final progress step
               if (_step > 0 && _step < 2)
-                TextButton(
+                TextButton.icon(
                   onPressed: details.onStepCancel,
-                  child: const Text('Back'),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('Back'),
                 ),
             ],
           );

@@ -12,6 +12,7 @@ dependencies:
     sdk: flutter
   file_selector: ^1.0.3
   file_selector_macos: ^0.9.4+4
+  window_manager: ^0.3.8
 
 dev_dependencies:
   flutter_test:

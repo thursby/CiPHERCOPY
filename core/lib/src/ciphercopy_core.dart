@@ -55,7 +55,9 @@ Future<void> copyFilesFromList(
   CancellationToken? cancelToken,
 }) async {
   final lines = await File(listFile).readAsLines();
-  final hashFile = destDir.endsWith('/') ? '${destDir}hashes.sha1' : '$destDir/hashes.sha1';
+  final hashFile = destDir.endsWith('/')
+      ? '${destDir}hashes.sha1'
+      : '$destDir/hashes.sha1';
   await deleteFile(hashFile);
   logger.info('Copying files from list: $listFile to $destDir');
   final queue = <Map<String, String>>[];
@@ -64,14 +66,26 @@ Future<void> copyFilesFromList(
     if (trimmed.isEmpty) continue;
     if (await FileSystemEntity.isDirectory(trimmed)) continue;
     final relPath = trimmed.startsWith('/') ? trimmed.substring(1) : trimmed;
-    final destPath = destDir.endsWith('/') ? '$destDir$relPath' : '$destDir/$relPath';
-    await Directory(destPath.substring(0, destPath.lastIndexOf('/'))).create(recursive: true);
+    final destPath = destDir.endsWith('/')
+        ? '$destDir$relPath'
+        : '$destDir/$relPath';
+    await Directory(
+      destPath.substring(0, destPath.lastIndexOf('/')),
+    ).create(recursive: true);
     queue.add({'source': trimmed, 'dest': destPath});
   }
   final cpuCount = threadCount ?? Platform.numberOfProcessors;
   final totalFiles = queue.length;
-  logger.info('Total files to copy: $totalFiles using $cpuCount workers (pool).');
-  onProgress?.call(ProgressEvent(type: ProgressEventType.overall, completedFiles: 0, totalFiles: totalFiles));
+  logger.info(
+    'Total files to copy: $totalFiles using $cpuCount workers (pool).',
+  );
+  onProgress?.call(
+    ProgressEvent(
+      type: ProgressEventType.overall,
+      completedFiles: 0,
+      totalFiles: totalFiles,
+    ),
+  );
   if (totalFiles == 0) {
     logger.warning('No files to copy.');
     return;
@@ -88,7 +102,9 @@ Future<void> copyFilesFromList(
 
   void tryDispatch() {
     if (shuttingDown) return;
-    while (idleWorkers.isNotEmpty && queue.isNotEmpty && (cancelToken?.isCancelled != true)) {
+    while (idleWorkers.isNotEmpty &&
+        queue.isNotEmpty &&
+        (cancelToken?.isCancelled != true)) {
       final worker = idleWorkers.removeLast();
       final job = queue.removeAt(0);
       active++;
@@ -127,14 +143,16 @@ Future<void> copyFilesFromList(
           tryDispatch();
           break;
         case 'progress':
-          onProgress?.call(ProgressEvent(
-            type: ProgressEventType.fileProgress,
-            path: msg['dest'] as String?,
-            copied: msg['copied'] as int?,
-            total: msg['total'] as int?,
-            completedFiles: completed,
-            totalFiles: totalFiles,
-          ));
+          onProgress?.call(
+            ProgressEvent(
+              type: ProgressEventType.fileProgress,
+              path: msg['dest'] as String?,
+              copied: msg['copied'] as int?,
+              total: msg['total'] as int?,
+              completedFiles: completed,
+              totalFiles: totalFiles,
+            ),
+          );
           break;
         case 'hash':
           final line = msg['line'] as String;
@@ -148,20 +166,24 @@ Future<void> copyFilesFromList(
           break;
         case 'fileDone':
           completed++;
-            active--;
-            onProgress?.call(ProgressEvent(
+          active--;
+          onProgress?.call(
+            ProgressEvent(
               type: ProgressEventType.fileDone,
               path: msg['dest'] as String?,
               completedFiles: completed,
               totalFiles: totalFiles,
-            ));
-            onProgress?.call(ProgressEvent(
+            ),
+          );
+          onProgress?.call(
+            ProgressEvent(
               type: ProgressEventType.overall,
               completedFiles: completed,
               totalFiles: totalFiles,
-            ));
-            idleWorkers.add(msg['worker'] as SendPort);
-            tryDispatch();
+            ),
+          );
+          idleWorkers.add(msg['worker'] as SendPort);
+          tryDispatch();
           break;
         case 'error':
           final src = msg['source'] as String? ?? 'unknown';
@@ -182,8 +204,14 @@ Future<void> copyFilesFromList(
       logger.info('Partial hashes written to $hashFile');
     }
     if (saveLists) {
-      final copiedFile = File(destDir.endsWith('/') ? '${destDir}copied.txt' : '$destDir/copied.txt');
-      final erroredFile = File(destDir.endsWith('/') ? '${destDir}errored.txt' : '$destDir/errored.txt');
+      final copiedFile = File(
+        destDir.endsWith('/') ? '${destDir}copied.txt' : '$destDir/copied.txt',
+      );
+      final erroredFile = File(
+        destDir.endsWith('/')
+            ? '${destDir}errored.txt'
+            : '$destDir/errored.txt',
+      );
       await copiedFile.writeAsString(copied.join('\n'));
       await erroredFile.writeAsString(errored.join('\n'));
       logger.info('Partial copied/errored lists written (cancelled).');
@@ -196,8 +224,12 @@ Future<void> copyFilesFromList(
     logger.info('Hashes written to $hashFile');
   }
   if (saveLists) {
-    final copiedFile = File(destDir.endsWith('/') ? '${destDir}copied.txt' : '$destDir/copied.txt');
-    final erroredFile = File(destDir.endsWith('/') ? '${destDir}errored.txt' : '$destDir/errored.txt');
+    final copiedFile = File(
+      destDir.endsWith('/') ? '${destDir}copied.txt' : '$destDir/copied.txt',
+    );
+    final erroredFile = File(
+      destDir.endsWith('/') ? '${destDir}errored.txt' : '$destDir/errored.txt',
+    );
     if (copied.isNotEmpty) {
       await copiedFile.writeAsString('${copied.join('\n')}\n');
       logger.info('Copied file list written to ${copiedFile.path}');
@@ -246,8 +278,15 @@ void _copyWorkerMain(SendPort manager) async {
         await out.close();
         hasher.close();
         final digest = capture.digest!;
-        manager.send({'type': 'hash', 'line': '${digest.toString()}  ${file['dest']!}\n'});
-        manager.send({'type': 'fileDone', 'dest': file['dest'], 'worker': commandPort.sendPort});
+        manager.send({
+          'type': 'hash',
+          'line': '${digest.toString()}  ${file['dest']!}\n',
+        });
+        manager.send({
+          'type': 'fileDone',
+          'dest': file['dest'],
+          'worker': commandPort.sendPort,
+        });
       } catch (e, st) {
         manager.send({
           'type': 'error',
@@ -256,7 +295,11 @@ void _copyWorkerMain(SendPort manager) async {
           'stack': st.toString(),
           'worker': commandPort.sendPort,
         });
-        manager.send({'type': 'fileDone', 'dest': file['dest'], 'worker': commandPort.sendPort});
+        manager.send({
+          'type': 'fileDone',
+          'dest': file['dest'],
+          'worker': commandPort.sendPort,
+        });
       }
     } else if (msg is Map && msg['type'] == 'shutdown') {
       commandPort.close();
@@ -369,9 +412,22 @@ Future<VerifySummary> verifyFromSha1(
   logger.info('Total files to verify: $totalFiles using $cpuCount threads.');
   final receivePort = ReceivePort();
   final queue = List<Map<String, String>>.from(entries);
-  onProgress?.call(ProgressEvent(type: ProgressEventType.overall, completedFiles: 0, totalFiles: totalFiles));
+  onProgress?.call(
+    ProgressEvent(
+      type: ProgressEventType.overall,
+      completedFiles: 0,
+      totalFiles: totalFiles,
+    ),
+  );
   if (queue.isEmpty) {
-    return VerifySummary(total: 0, ok: 0, mismatched: 0, errors: 0, mismatchedFiles: const [], errorFiles: const []);
+    return VerifySummary(
+      total: 0,
+      ok: 0,
+      mismatched: 0,
+      errors: 0,
+      mismatchedFiles: const [],
+      errorFiles: const [],
+    );
   }
   int completedFiles = 0;
   int okCount = 0;
@@ -386,7 +442,9 @@ Future<VerifySummary> verifyFromSha1(
 
   void tryDispatch() {
     if (shuttingDown) return;
-    while (idleWorkers.isNotEmpty && queue.isNotEmpty && (cancelToken?.isCancelled != true)) {
+    while (idleWorkers.isNotEmpty &&
+        queue.isNotEmpty &&
+        (cancelToken?.isCancelled != true)) {
       final worker = idleWorkers.removeLast();
       final job = queue.removeAt(0);
       active++;
@@ -425,14 +483,16 @@ Future<VerifySummary> verifyFromSha1(
           tryDispatch();
           break;
         case 'progress':
-          onProgress?.call(ProgressEvent(
-            type: ProgressEventType.fileProgress,
-            path: msg['path'] as String?,
-            copied: msg['copied'] as int?,
-            total: msg['total'] as int?,
-            completedFiles: completedFiles,
-            totalFiles: totalFiles,
-          ));
+          onProgress?.call(
+            ProgressEvent(
+              type: ProgressEventType.fileProgress,
+              path: msg['path'] as String?,
+              copied: msg['copied'] as int?,
+              total: msg['total'] as int?,
+              completedFiles: completedFiles,
+              totalFiles: totalFiles,
+            ),
+          );
           break;
         case 'verified':
           final ok = msg['ok'] as bool? ?? false;
@@ -442,7 +502,9 @@ Future<VerifySummary> verifyFromSha1(
           } else {
             mismatchCount++;
             mismatches.add(path);
-            logger.warning('Hash mismatch: ${msg['expected']} != ${msg['actual']} for $path');
+            logger.warning(
+              'Hash mismatch: ${msg['expected']} != ${msg['actual']} for $path',
+            );
           }
           break;
         case 'error':
@@ -454,17 +516,21 @@ Future<VerifySummary> verifyFromSha1(
         case 'fileDone':
           completedFiles++;
           active--;
-          onProgress?.call(ProgressEvent(
-            type: ProgressEventType.fileDone,
-            path: msg['path'] as String?,
-            completedFiles: completedFiles,
-            totalFiles: totalFiles,
-          ));
-          onProgress?.call(ProgressEvent(
-            type: ProgressEventType.overall,
-            completedFiles: completedFiles,
-            totalFiles: totalFiles,
-          ));
+          onProgress?.call(
+            ProgressEvent(
+              type: ProgressEventType.fileDone,
+              path: msg['path'] as String?,
+              completedFiles: completedFiles,
+              totalFiles: totalFiles,
+            ),
+          );
+          onProgress?.call(
+            ProgressEvent(
+              type: ProgressEventType.overall,
+              completedFiles: completedFiles,
+              totalFiles: totalFiles,
+            ),
+          );
           idleWorkers.add(msg['worker'] as SendPort);
           tryDispatch();
           break;
@@ -482,7 +548,9 @@ Future<VerifySummary> verifyFromSha1(
   if (cancelToken?.isCancelled == true) {
     return summary;
   }
-  logger.info('Verify complete: ${summary.ok}/${summary.total} OK, ${summary.mismatched} mismatched, ${summary.errors} errors.');
+  logger.info(
+    'Verify complete: ${summary.ok}/${summary.total} OK, ${summary.mismatched} mismatched, ${summary.errors} errors.',
+  );
   return summary;
 }
 
@@ -506,17 +574,41 @@ void _verifyWorkerMain(SendPort manager) async {
           hasher.add(chunk);
           read += chunk.length;
           if (throttle.elapsedMilliseconds >= updateMs) {
-            manager.send({'type': 'progress', 'path': path, 'copied': read, 'total': total});
+            manager.send({
+              'type': 'progress',
+              'path': path,
+              'copied': read,
+              'total': total,
+            });
             throttle.reset();
           }
         }
         hasher.close();
         final actual = capture.digest!.toString();
-        manager.send({'type': 'verified', 'path': path, 'ok': actual == expected, 'expected': expected, 'actual': actual});
-        manager.send({'type': 'fileDone', 'path': path, 'worker': commandPort.sendPort});
+        manager.send({
+          'type': 'verified',
+          'path': path,
+          'ok': actual == expected,
+          'expected': expected,
+          'actual': actual,
+        });
+        manager.send({
+          'type': 'fileDone',
+          'path': path,
+          'worker': commandPort.sendPort,
+        });
       } catch (e) {
-        manager.send({'type': 'error', 'path': path, 'error': e.toString(), 'worker': commandPort.sendPort});
-        manager.send({'type': 'fileDone', 'path': path, 'worker': commandPort.sendPort});
+        manager.send({
+          'type': 'error',
+          'path': path,
+          'error': e.toString(),
+          'worker': commandPort.sendPort,
+        });
+        manager.send({
+          'type': 'fileDone',
+          'path': path,
+          'worker': commandPort.sendPort,
+        });
       }
     } else if (msg is Map && msg['type'] == 'shutdown') {
       commandPort.close();
