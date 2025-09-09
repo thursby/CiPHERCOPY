@@ -61,7 +61,7 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
 
   @override
   void dispose() {
-  _throttleTimer?.cancel();
+    _throttleTimer?.cancel();
     _logController?.close();
     super.dispose();
   }
@@ -395,9 +395,9 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
       _statusMessage = null;
       _cancelRequested = false;
       _cancellationToken = core.CancellationToken();
-  _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
-  _throttleTimer?.cancel();
-  _dirty = false;
+      _lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+      _throttleTimer?.cancel();
+      _dirty = false;
     });
     try {
       // Determine a base directory (used for resolving relative paths and logging)
@@ -418,6 +418,21 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
       } finally {
         // Restore current directory for rest of UI code
         Directory.current = previousCwd;
+      }
+
+      void _flushUi() {
+        if (!_dirty || !mounted) return;
+        _dirty = false;
+        _lastUiUpdate = DateTime.now();
+        setState(() {}); // Rebuild with latest progress state
+      }
+
+      void _scheduleDeferredFlush() {
+        if (_throttleTimer?.isActive == true) return;
+        final remaining =
+            _uiUpdateInterval - DateTime.now().difference(_lastUiUpdate);
+        final delay = remaining.isNegative ? Duration.zero : remaining;
+        _throttleTimer = Timer(delay, _flushUi);
       }
 
       void onProgress(core.ProgressEvent e) {
@@ -456,27 +471,15 @@ class _CipherCopyStepsState extends State<CipherCopySteps> {
         _dirty = true;
         final now = DateTime.now();
         final since = now.difference(_lastUiUpdate);
-        final shouldFlushNow = since >= _uiUpdateInterval ||
-            (e.type == core.ProgressEventType.fileDone && (_overallCompleted == _overallTotal));
+        final shouldFlushNow =
+            since >= _uiUpdateInterval ||
+            (e.type == core.ProgressEventType.fileDone &&
+                (_overallCompleted == _overallTotal));
         if (shouldFlushNow) {
           _flushUi();
         } else {
           _scheduleDeferredFlush();
         }
-      }
-
-      void _scheduleDeferredFlush() {
-        if (_throttleTimer?.isActive == true) return;
-        final remaining = _uiUpdateInterval - DateTime.now().difference(_lastUiUpdate);
-        final delay = remaining.isNegative ? Duration.zero : remaining;
-        _throttleTimer = Timer(delay, _flushUi);
-      }
-
-      void _flushUi() {
-        if (!_dirty || !mounted) return;
-        _dirty = false;
-        _lastUiUpdate = DateTime.now();
-        setState(() {}); // Rebuild with latest progress state
       }
 
       if (_operation == OperationType.verify) {
