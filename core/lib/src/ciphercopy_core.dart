@@ -39,12 +39,20 @@ class ProgressEvent {
   });
 }
 
+/// Simple cancellation token that can be polled by long-running operations.
+class CancellationToken {
+  bool _cancelled = false;
+  bool get isCancelled => _cancelled;
+  void cancel() => _cancelled = true;
+}
+
 Future<void> copyFilesFromList(
   String listFile,
   String destDir, {
   int? threadCount,
   bool saveLists = false,
   void Function(ProgressEvent event)? onProgress,
+  CancellationToken? cancelToken,
 }) async {
   final lines = await File(listFile).readAsLines();
   final hashFile = destDir.endsWith('/')
@@ -86,7 +94,10 @@ Future<void> copyFilesFromList(
     ),
   );
 
+  final isolates = <Isolate>[];
+
   void startNext() {
+    if (cancelToken?.isCancelled == true) return;
     if (fileQueue.isEmpty) {
       if (active == 0 && !done) {
         done = true;
@@ -96,13 +107,29 @@ Future<void> copyFilesFromList(
     }
     final file = fileQueue.removeAt(0);
     active++;
-    Isolate.spawn(_copyFileEntrySingleWriter, [file, receivePort.sendPort]);
+    Isolate.spawn(_copyFileEntrySingleWriter, [file, receivePort.sendPort])
+        .then((iso) {
+      isolates.add(iso);
+      if (cancelToken?.isCancelled == true) {
+        iso.kill(priority: Isolate.immediate);
+      }
+    });
   }
 
   for (int i = 0; i < cpuCount && fileQueue.isNotEmpty; i++) {
     startNext();
   }
   await for (final msg in receivePort) {
+    if (cancelToken?.isCancelled == true) {
+      // Kill any remaining isolates and stop spawning.
+      for (final iso in isolates) {
+        iso.kill(priority: Isolate.immediate);
+      }
+      logger.warning('Copy operation cancelled.');
+      done = true;
+      receivePort.close();
+      break;
+    }
     if (msg is Map && msg['type'] == 'done') {
       final dest = (msg['dest'] ?? '') as String;
       completedFiles++;
@@ -122,7 +149,7 @@ Future<void> copyFilesFromList(
         ),
       );
       active--;
-      startNext();
+      if (cancelToken?.isCancelled != true) startNext();
       if (fileQueue.isEmpty && active == 0 && !done) {
         done = true;
         receivePort.close();
@@ -137,7 +164,7 @@ Future<void> copyFilesFromList(
         ),
       );
       active--;
-      startNext();
+      if (cancelToken?.isCancelled != true) startNext();
       if (fileQueue.isEmpty && active == 0 && !done) {
         done = true;
         receivePort.close();
@@ -168,6 +195,26 @@ Future<void> copyFilesFromList(
       logger.severe('Error copying file ${msg.file['source']}: ${msg.error}');
       errored.add(msg.file['source'] ?? '');
     }
+  }
+  if (cancelToken?.isCancelled == true) {
+    // Write partial results if any, then return early.
+    if (hashLines.isNotEmpty) {
+      final sha1File = File(hashFile);
+      await sha1File.writeAsString(hashLines.join(''), mode: FileMode.append);
+      logger.info('Partial hashes written to $hashFile');
+    }
+    if (saveLists) {
+      final copiedFile = File(
+        destDir.endsWith('/') ? '${destDir}copied.txt' : '$destDir/copied.txt',
+      );
+      final erroredFile = File(
+        destDir.endsWith('/') ? '${destDir}errored.txt' : '$destDir/errored.txt',
+      );
+      await copiedFile.writeAsString(copied.join('\n'));
+      await erroredFile.writeAsString(errored.join('\n'));
+      logger.info('Partial copied/errored lists written (cancelled).');
+    }
+    return; // Cancelled: skip normal completion log
   }
   if (hashLines.isNotEmpty) {
     final sha1File = File(hashFile);
@@ -320,6 +367,7 @@ Future<VerifySummary> verifyFromSha1(
   String sha1Path, {
   int? threadCount,
   void Function(ProgressEvent event)? onProgress,
+  CancellationToken? cancelToken,
 }) async {
   final manifest = File(sha1Path);
   if (!await manifest.exists()) {
@@ -332,11 +380,16 @@ Future<VerifySummary> verifyFromSha1(
     final trimmed = line.trim();
     if (trimmed.isEmpty) continue;
     final idx = trimmed.indexOf('  ');
+    // final idx = RegExp(r' {2,}| ').firstMatch(trimmed)?.start ?? -1;
     if (idx <= 0) continue;
     final hash = trimmed.substring(0, idx).trim();
     final path = trimmed.substring(idx + 2).trim();
     if (hash.isEmpty || path.isEmpty) continue;
     entries.add({'hash': hash, 'path': path});
+  }
+  if (entries.isEmpty) {
+    logger.severe('No file entries found in manifest: $sha1Path');
+    throw ArgumentError('No file entries found in manifest: $sha1Path');
   }
   final totalFiles = entries.length;
   final cpuCount = threadCount ?? Platform.numberOfProcessors;
@@ -358,17 +411,32 @@ Future<VerifySummary> verifyFromSha1(
   final mismatches = <String>[];
   final errors = <String>[];
   // Throttling previously used for rendering; no longer needed in core.
+  final isolates = <Isolate>[];
   void startNext() {
+    if (cancelToken?.isCancelled == true) return;
     if (queue.isEmpty) return;
     final job = queue.removeAt(0);
     active++;
-    Isolate.spawn(_verifyFileEntry, [job, receivePort.sendPort]);
+    Isolate.spawn(_verifyFileEntry, [job, receivePort.sendPort]).then((iso) {
+      isolates.add(iso);
+      if (cancelToken?.isCancelled == true) {
+        iso.kill(priority: Isolate.immediate);
+      }
+    });
   }
 
   for (int i = 0; i < cpuCount && queue.isNotEmpty; i++) {
     startNext();
   }
   await for (final msg in receivePort) {
+    if (cancelToken?.isCancelled == true) {
+      for (final iso in isolates) {
+        iso.kill(priority: Isolate.immediate);
+      }
+      logger.warning('Verify operation cancelled.');
+      receivePort.close();
+      break;
+    }
     if (msg is Map && msg['type'] == 'progress') {
       final path = (msg['path'] ?? '') as String;
       final copiedNow = (msg['copied'] ?? 0) as int;
@@ -420,11 +488,23 @@ Future<VerifySummary> verifyFromSha1(
         ),
       );
       active--;
-      startNext();
+      if (cancelToken?.isCancelled != true) startNext();
       if (queue.isEmpty && active == 0) {
         receivePort.close();
       }
     }
+  }
+  if (cancelToken?.isCancelled == true) {
+    // Return partial summary
+    final summary = VerifySummary(
+      total: totalFiles,
+      ok: okCount,
+      mismatched: mismatchCount,
+      errors: errorCount,
+      mismatchedFiles: mismatches,
+      errorFiles: errors,
+    );
+    return summary;
   }
   final summary = VerifySummary(
     total: totalFiles,

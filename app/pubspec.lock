@@ -105,7 +105,7 @@ packages:
     source: hosted
     version: "0.9.3+2"
   file_selector_macos:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: file_selector_macos
       sha256: "19124ff4a3d8864fdc62072b6a2ef6c222d55a3404fe14893a3c02744907b60c"
