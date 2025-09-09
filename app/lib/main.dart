@@ -16,29 +16,32 @@ class CipherCopyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'CipherCopy Wizard',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: const CipherCopyWizard(),
+      title: 'CiPHERCOPY',
+      theme: ThemeData(primarySwatch: Colors.lightGreen),
+      darkTheme: ThemeData.dark(useMaterial3: true),
+      themeMode: ThemeMode.system,
+      home: const CipherCopySteps(),
     );
   }
 }
 
 enum OperationType { verify, copy }
 
-class CipherCopyWizard extends StatefulWidget {
-  const CipherCopyWizard({super.key});
+class CipherCopySteps extends StatefulWidget {
+  const CipherCopySteps({super.key});
 
   @override
-  State<CipherCopyWizard> createState() => _CipherCopyWizardState();
+  State<CipherCopySteps> createState() => _CipherCopyStepsState();
 }
 
-class _CipherCopyWizardState extends State<CipherCopyWizard> {
+class _CipherCopyStepsState extends State<CipherCopySteps> {
   int _step = 0;
   OperationType? _operation;
   String? _sha1File;
   String? _fileList;
   String? _destDir;
   bool _saveLists = false;
+  int _threadCount = Platform.numberOfProcessors - 1; // Adjustable thread count
   double _progress = 0;
   // Track active file progress (currently copying / verifying) only.
   final Map<String, _ActiveFileProgress> _activeFiles = {};
@@ -59,9 +62,16 @@ class _CipherCopyWizardState extends State<CipherCopyWizard> {
 
   @override
   Widget build(BuildContext context) {
+    final ColorScheme colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('CipherCopy Wizard'),
+        titleTextStyle: TextStyle(
+          fontFamily: "monospace",
+          fontFamilyFallback: const <String>["Courier", "Courier New"],
+          color: colorScheme.primary,
+          fontSize: 48,
+        ),
+        title: const Text('CiPHERCOPY'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -130,10 +140,16 @@ class _CipherCopyWizardState extends State<CipherCopyWizard> {
   }
 
   Widget _buildVerifyInputs() {
+    TextStyle? errorTextStyle = Theme.of(
+      context,
+    ).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.error);
     return Column(
       children: [
         ListTile(
-          title: Text(_sha1File ?? 'Select .sha1 file'),
+          title: Text('Select .sha1 file'),
+          subtitle: _sha1File == null
+              ? Text('Required', style: errorTextStyle)
+              : Text(_sha1File!),
           trailing: const Icon(Icons.attach_file),
           onTap: () async {
             final typeGroup = XTypeGroup(label: 'SHA1', extensions: ['sha1']);
@@ -143,6 +159,7 @@ class _CipherCopyWizardState extends State<CipherCopyWizard> {
             }
           },
         ),
+        _buildThreadControl(),
         _buildSaveListsSwitch(),
       ],
     );
@@ -171,14 +188,67 @@ class _CipherCopyWizardState extends State<CipherCopyWizard> {
             }
           },
         ),
+        _buildThreadControl(),
         _buildSaveListsSwitch(),
       ],
     );
   }
 
+  Widget _buildThreadControl() {
+    const minThreads = 1;
+    final maxThreads = (Platform.numberOfProcessors).clamp(
+      4,
+      128,
+    ); // generous upper bound
+    return ListTile(
+      title: const Text('Threads'),
+      subtitle: Text('Reduce if I/O is the bottleneck'),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: 'Decrease',
+            icon: const Icon(Icons.remove),
+            onPressed: _threadCount > minThreads
+                ? () => setState(
+                    () => _threadCount = (_threadCount - 1).clamp(
+                      minThreads,
+                      maxThreads,
+                    ),
+                  )
+                : null,
+          ),
+          SizedBox(
+            width: 44,
+            child: Text(
+              '$_threadCount',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 20,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Increase',
+            icon: const Icon(Icons.add),
+            onPressed: _threadCount < maxThreads
+                ? () => setState(
+                    () => _threadCount = (_threadCount + 1).clamp(
+                      minThreads,
+                      maxThreads,
+                    ),
+                  )
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSaveListsSwitch() {
     return SwitchListTile(
-      title: const Text('Save copied/errored file lists (-l)'),
+      title: const Text('Save copied and errored file lists'),
       value: _saveLists,
       onChanged: (val) => setState(() => _saveLists = val),
     );
@@ -231,14 +301,14 @@ class _CipherCopyWizardState extends State<CipherCopyWizard> {
           Row(
             children: [
               ElevatedButton.icon(
-              onPressed: _startOperation,
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('Start'),
+                onPressed: _startOperation,
+                icon: const Icon(Icons.play_arrow),
+                label: const Text('Start'),
               ),
               ElevatedButton.icon(
-              onPressed: _resetAll,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Reset'),
+                onPressed: _resetAll,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Reset'),
               ),
             ],
           ),
@@ -383,6 +453,7 @@ class _CipherCopyWizardState extends State<CipherCopyWizard> {
         Directory.current = File(_sha1File!).parent;
         final summary = await core.verifyFromSha1(
           _sha1File!,
+          threadCount: _threadCount,
           onProgress: onProgress,
           cancelToken: _cancellationToken,
         );
@@ -402,6 +473,7 @@ class _CipherCopyWizardState extends State<CipherCopyWizard> {
         await core.copyFilesFromList(
           _fileList!,
           _destDir!,
+          threadCount: _threadCount,
           saveLists: _saveLists,
           onProgress: onProgress,
           cancelToken: _cancellationToken,

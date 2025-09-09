@@ -9,7 +9,7 @@
 High-performance file copy & verification toolkit providing:
 
 * A multi-threaded command-line interface (CLI) with live ANSI progress bars.
-* A cross‑platform Flutter graphical user interface (GUI) with a step‑by‑step wizard, rich progress, cancellation, and log interactions.
+* A cross‑platform Flutter graphical user interface (GUI) with a step‑by‑step process, rich progress, cancellation, and log interactions.
 * A reusable core library (`ciphercopy_core`) exposing copy & verify primitives, progress events, and cooperative cancellation.
 
 ---
@@ -87,7 +87,7 @@ dart run bin/ciphercopy_cli.dart [list_file] [destination_directory]
 Flags:
 
 * `-h, --help` Show usage
-* `-t, --threads <count>` Number of concurrent threads (defaults to the number of CPU cores)
+* `-t, --threads <count>` Number of concurrent threads (defaults to the number of CPU cores minus 1)
 * `-l, --list` Also write `copied.txt` and `errored.txt` in the destination
 * `--verify <hashes.sha1>` Verify instead of copy (omit list & destination args)
 

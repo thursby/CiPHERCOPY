@@ -35,9 +35,6 @@ Future<String> initLogging(String destDir) async {
     if (record.stackTrace != null) {
       _fileSink?.writeln(record.stackTrace);
     }
-    // Flush after every record for immediate durability / realtime tailing.
-    // (Fire-and-forget; we intentionally do not await to avoid blocking.)
-    _fileSink?.flush();
   });
 
   return logFilePath;

@@ -1,5 +1,5 @@
 name: ciphercopy_cli
-description: Command-line interface for CiPHERCOPY: multi-threaded batch file copy, SHA-1 manifest generation & verification, progress bars, logging, and cancellation.
+description: "Command-line interface for CiPHERCOPY: multi-threaded batch file copy, SHA-1 manifest generation & verification, progress bars, logging, and cancellation."
 version: 1.0.0
 repository: https://github.com/thursby/ciphercopy
 
