@@ -1,0 +1,5 @@
+
+*/.dart_tool/
+**/*.log
+**/testfiles/*
+.DS_Store
