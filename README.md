@@ -12,6 +12,14 @@ High-performance file copy & verification toolkit providing:
 * A cross‑platform Flutter graphical user interface (GUI) with a step‑by‑step process, rich progress, cancellation, and log interactions.
 * A reusable core library (`ciphercopy_core`) exposing copy & verify primitives, progress events, and cooperative cancellation.
 
+## Motivation
+
+Traditionally, file copying and hashing were single-threaded because older hard drives couldn’t handle multiple operations efficiently. Their slow seek times made parallel work counterproductive. With today’s SSDs and fast RAID arrays, storage is much faster, and single-threaded tools can actually become the bottleneck, especially when moving many files or large amounts of data.
+
+CiPHERCOPY was built to take advantage of today’s multi-core CPUs and fast storage, letting you copy and verify files in parallel for much better performance. Copying from a list of files (instead of just directories) is also a feature I found missing in most tools, so I made it a core part of this project.
+
+On top of that, I wanted to dig deeper into Dart and Flutter’s multi-threading model so this was a great way to learn about isolates and build something genuinely useful at the same time.
+
 ---
 
 ## GUI (Flutter Application)
