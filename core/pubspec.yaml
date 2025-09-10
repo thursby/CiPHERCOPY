@@ -1,5 +1,5 @@
+publish_to: none
 name: ciphercopy_core
-publish_to: 'none'
 description: "Core engine for CiPHERCOPY: high-performance multi-threaded file copy, SHA-1 manifest generation & verification, progress events, and cooperative cancellation."
 version: 1.0.0
 repository: https://github.com/thursby/ciphercopy
