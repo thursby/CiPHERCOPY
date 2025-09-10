@@ -142,7 +142,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "$stage/cli" | Out-Null
           New-Item -ItemType Directory -Force -Path "$stage/app" | Out-Null
           Copy-Item -Path "cli/${{ steps.cli_compile.outputs.bin_path }}" -Destination "$stage/cli/" -Force
-          Copy-Item -Path "app/build/windows/runner/Release/*" -Destination "$stage/app" -Recurse -Force
+          Copy-Item -Path "app/build/windows/x64/runner/Release/*" -Destination "$stage/app" -Recurse -Force
           Copy-Item -Path "README.md" -Destination "$stage" -Force
           Compress-Archive -Path "$stage/*" -DestinationPath "package/ciphercopy-$os-x64.zip"
           echo "path=package/ciphercopy-$os-x64.zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
