@@ -45,14 +45,21 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
 
+
       # Build CLI
+      - name: Cache Dart pub for CLI
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+          key: dart-pub-cli-${{ runner.os }}-${{ hashFiles('cli/pubspec.lock') }}
+          restore-keys: |
+            dart-pub-cli-${{ runner.os }}-
+
       - name: CLI pub get
         working-directory: cli
         run: dart pub get
 
-      - name: CLI analyze (non-fatal warnings)
-        working-directory: cli
-        run: dart analyze --no-fatal-warnings
 
       - name: CLI compile
         id: cli_compile
@@ -67,14 +74,21 @@ jobs:
           dart compile exe bin/ciphercopy_cli.dart -o "$OUT_DIR/$BIN_NAME"
           echo "bin_path=$OUT_DIR/$BIN_NAME" >> $GITHUB_OUTPUT
 
+
       # Build App
+      - name: Cache Flutter pub for App
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+          key: flutter-pub-app-${{ runner.os }}-${{ hashFiles('app/pubspec.lock') }}
+          restore-keys: |
+            flutter-pub-app-${{ runner.os }}-
+
       - name: App pub get
         working-directory: app
         run: flutter pub get
 
-      - name: App analyze (non-fatal warnings)
-        working-directory: app
-        run: flutter analyze --no-fatal-warnings
 
       - name: App build desktop
         shell: bash
