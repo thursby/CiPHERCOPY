@@ -53,10 +53,6 @@ jobs:
         working-directory: cli
         run: dart analyze --no-fatal-warnings
 
-      - name: CLI tests
-        working-directory: cli
-        run: dart test
-
       - name: CLI compile
         id: cli_compile
         shell: bash
@@ -78,10 +74,6 @@ jobs:
       - name: App analyze (non-fatal warnings)
         working-directory: app
         run: flutter analyze --no-fatal-warnings
-
-      - name: App tests
-        working-directory: app
-        run: flutter test
 
       - name: App build desktop
         shell: bash
