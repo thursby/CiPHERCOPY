@@ -1,0 +1,174 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  package-os:
+    name: Build & Package (CLI + App) — ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Setup SDKs
+      - name: Setup Dart
+        uses: dart-lang/setup-dart@v1
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Enable desktop for host OS
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            macOS) flutter config --enable-macos-desktop ;;
+            Windows) flutter config --enable-windows-desktop ;;
+            Linux) flutter config --enable-linux-desktop ;;
+          esac
+
+      - name: Linux desktop deps
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      # Build CLI
+      - name: CLI pub get
+        working-directory: cli
+        run: dart pub get
+
+      - name: CLI analyze (non-fatal warnings)
+        working-directory: cli
+        run: dart analyze --no-fatal-warnings
+
+      - name: CLI tests
+        working-directory: cli
+        run: dart test
+
+      - name: CLI compile
+        id: cli_compile
+        shell: bash
+        working-directory: cli
+        run: |
+          OS_SLUG=$(echo "${{ runner.os }}" | tr '[:upper:]' '[:lower:]')
+          OUT_DIR="dist/cli/${OS_SLUG}"
+          mkdir -p "$OUT_DIR"
+          BIN_NAME="ciphercopy"
+          if [[ "$OS_SLUG" == "windows" ]]; then BIN_NAME+=".exe"; fi
+          dart compile exe bin/ciphercopy_cli.dart -o "$OUT_DIR/$BIN_NAME"
+          echo "bin_path=$OUT_DIR/$BIN_NAME" >> $GITHUB_OUTPUT
+
+      # Build App
+      - name: App pub get
+        working-directory: app
+        run: flutter pub get
+
+      - name: App analyze (non-fatal warnings)
+        working-directory: app
+        run: flutter analyze --no-fatal-warnings
+
+      - name: App tests
+        working-directory: app
+        run: flutter test
+
+      - name: App build desktop
+        shell: bash
+        working-directory: app
+        run: |
+          case "${{ runner.os }}" in
+            macOS) flutter build macos ;;
+            Windows) flutter build windows ;;
+            Linux) flutter build linux ;;
+          esac
+
+      # Package combined (CLI + App + README)
+      - name: Package Linux combined
+        if: runner.os == 'Linux'
+        id: pkg_linux
+        shell: bash
+        run: |
+          OS_SLUG=linux
+          STAGE="package/ciphercopy-${OS_SLUG}-x64"
+          rm -rf "$STAGE" && mkdir -p "$STAGE/cli" "$STAGE/app"
+          cp -v "cli/${{ steps.cli_compile.outputs.bin_path }}" "$STAGE/cli/" 2>/dev/null || true
+          cp -R app/build/linux/x64/release/bundle/* "$STAGE/app/"
+          cp -v README.md "$STAGE/"
+          (cd package && zip -r "ciphercopy-${OS_SLUG}-x64.zip" "ciphercopy-${OS_SLUG}-x64")
+          echo "path=package/ciphercopy-${OS_SLUG}-x64.zip" >> $GITHUB_OUTPUT
+
+      - name: Package macOS combined
+        if: runner.os == 'macOS'
+        id: pkg_macos
+        shell: bash
+        run: |
+          OS_SLUG=macos
+          STAGE="package/ciphercopy-${OS_SLUG}-x64"
+          rm -rf "$STAGE" && mkdir -p "$STAGE/cli" "$STAGE/app"
+          cp -v "cli/${{ steps.cli_compile.outputs.bin_path }}" "$STAGE/cli/" 2>/dev/null || true
+          APP_PATH=$(ls -1d app/build/macos/Build/Products/Release/*.app | head -n1)
+          if [[ -z "$APP_PATH" ]]; then echo "No .app found" && exit 1; fi
+          cp -R "$APP_PATH" "$STAGE/app/"
+          cp -v README.md "$STAGE/"
+          (cd package && zip -r "ciphercopy-${OS_SLUG}-x64.zip" "ciphercopy-${OS_SLUG}-x64")
+          echo "path=package/ciphercopy-${OS_SLUG}-x64.zip" >> $GITHUB_OUTPUT
+
+      - name: Package Windows combined
+        if: runner.os == 'Windows'
+        id: pkg_windows
+        shell: pwsh
+        run: |
+          $os = 'windows'
+          $stage = "package/ciphercopy-$os-x64"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force -Path "$stage/cli" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage/app" | Out-Null
+          Copy-Item -Path "cli/${{ steps.cli_compile.outputs.bin_path }}" -Destination "$stage/cli/" -Force
+          Copy-Item -Path "app/build/windows/runner/Release/*" -Destination "$stage/app" -Recurse -Force
+          Copy-Item -Path "README.md" -Destination "$stage" -Force
+          Compress-Archive -Path "$stage/*" -DestinationPath "package/ciphercopy-$os-x64.zip"
+          echo "path=package/ciphercopy-$os-x64.zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciphercopy-${{ runner.os }}-x64
+          path: |
+            ${{ steps.pkg_linux.outputs.path }}
+            ${{ steps.pkg_macos.outputs.path }}
+            ${{ steps.pkg_windows.outputs.path }}
+
+  publish:
+    name: Publish Release
+    needs: [package-os]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: List artifacts
+        run: |
+          ls -R dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**/ciphercopy-*-x64.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
